@@ -19,7 +19,11 @@ for (const k of Object.keys(bonus)) {
   }
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
+
+// Beklenmedik bir hata (bir zamanlayıcı, bir olay işleyicisi) tüm sunucuyu ve odaları düşürmesin.
+process.on('uncaughtException', e => console.error('[uncaughtException]', e && e.stack || e));
+process.on('unhandledRejection', e => console.error('[unhandledRejection]', e && e.stack || e));
 
 const MIX_ALLOWED = new Set(['tf', 'closest', 'quiz', 'liar', 'wyr', 'ml', 'emoji', 'song', 'film', 'pixel']);
 const MIX_FORBIDDEN = new Set(['codenames', 'werewolf', 'imposter']);
@@ -1047,15 +1051,53 @@ const srv = http.createServer((req, res) => {
       pixelCount: pixelPool.length,
     }));
   }
+  let html;
+  try {
+    html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  } catch (e) {
+    console.error('[index.html okunamadı]', e.message);
+    res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('Sunucu hatası: index.html bulunamadı.');
+  }
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'));
+  res.end(html);
 });
+srv.on('error', e => {
+  console.error('[HTTP sunucu hatası]', e.code || e.message);
+  if (e.code === 'EADDRINUSE' || e.code === 'EACCES') process.exit(1);
+});
+// Render'ın yük dengeleyicisi boşta bağlantıyı kapatıp 502 üretmesin diye keep-alive süresi uzun tutulur.
+srv.keepAliveTimeout = 120000;
+srv.headersTimeout = 121000;
 
 const io = new Server(srv, { pingInterval: 10000, pingTimeout: 8000, maxHttpBufferSize: 2e4 });
 
 io.on('connection', s => {
+  // Bir olay işleyicisi hata fırlatırsa sunucu düşmesin; istemci bekleyip kalmasın (varsa geri çağrıya hata döner).
+  const rawOn = s.on.bind(s);
+  s.on = (ev, fn) => rawOn(ev, (...args) => {
+    try {
+      return fn(...args);
+    } catch (e) {
+      console.error('[socket:' + ev + ']', e && e.stack || e);
+      const cb = args[args.length - 1];
+      if (typeof cb === 'function') {
+        try { cb({ ok: false, err: 'Sunucu hatası. Tekrar dene.' }); } catch (_) { /* yoksay */ }
+      }
+    }
+  });
+
+  // Soket eski bir odanın verisini taşıyorsa (oda silindi, oyuncu atıldı) temizle; gerçekten bir odadaysa true döner.
+  const inRoom = () => {
+    if (!s.data || !s.data.code) return false;
+    if (me(s)[0]) return true;
+    s.data = {};
+    return false;
+  };
+
   s.on('create', (name, cb) => {
-    if (s.data.code || typeof cb !== 'function') return;
+    if (typeof cb !== 'function') return;
+    if (inRoom()) return cb({ err: 'Zaten bir odadasın. Önce odadan çık.' });
     const code = newCode();
     const r = {
       code,
@@ -1090,7 +1132,8 @@ io.on('connection', s => {
   });
 
   s.on('join', (code, name, cb) => {
-    if (s.data.code || typeof cb !== 'function') return;
+    if (typeof cb !== 'function') return;
+    if (inRoom()) return cb({ err: 'Zaten bir odadasın. Önce odadan çık.' });
     const r = rooms.get(String(code || '').toUpperCase().trim());
     if (!r) return cb({ err: 'Oda bulunamadı. Kodu kontrol et.' });
     if (r.players.size >= 10) return cb({ err: 'Oda dolu (10/10).' });
@@ -1101,14 +1144,19 @@ io.on('connection', s => {
   });
 
   s.on('rejoin', (code, key, cb) => {
+    if (typeof cb !== 'function') return;
     const r = rooms.get(String(code || '').toUpperCase().trim());
-    const p = r && [...r.players.values()].find(x => x.key === key);
-    if (!p || typeof cb !== 'function') return typeof cb === 'function' && cb({ err: 1 });
+    const p = r && typeof key === 'string' && [...r.players.values()].find(x => x.key === key);
+    if (!p) return cb({ err: 1 });
+    if (inRoom() && !(s.data.code === r.code && s.data.id === p.id)) return cb({ err: 'Zaten başka bir odadasın.' });
+    // Aynı oyuncu başka bir sekmeden/eski bağlantıdan hâlâ bağlıysa onu kapat (iki bağlantı aynı oyuncuyu yönetmesin).
+    const old = p.sid && p.sid !== s.id ? io.sockets.sockets.get(p.sid) : null;
     p.sid = s.id;
     p.on = true;
     p.off = 0;
     s.data.code = r.code;
     s.data.id = p.id;
+    if (old) { old.data = {}; old.disconnect(true); }
     cb({ ok: 1 });
     push(r);
   });
@@ -1155,7 +1203,7 @@ io.on('connection', s => {
         artist,
         lang: payload.lang === 'en' ? 'en' : 'tr',
         genres: [genre, 'Karışık'],
-        decade: year >= 2020 ? '2020 ve sonrası' : year >= 2010 ? '2010'lar' : '2000'ler',
+        decade: year >= 2020 ? '2020 ve sonrası' : year >= 2010 ? '2010\'lar' : '2000\'ler',
         year,
         d: diff,
         pop: 'high'
@@ -1504,7 +1552,8 @@ io.on('connection', s => {
     if (!r || r.host !== p.id || id === p.id) return;
     const t = r.players.get(id);
     if (!t) return;
-    if (t.sid) io.to(t.sid).emit('kicked');
+    const ts = t.sid ? io.sockets.sockets.get(t.sid) : null;
+    if (ts) { ts.emit('kicked'); ts.data = {}; }
     leave(r, t);
   });
 
@@ -1547,3 +1596,15 @@ setInterval(() => {
 }, 30000);
 
 srv.listen(PORT, '0.0.0.0', () => console.log('Parti Odası hazır: http://localhost:' + PORT));
+
+// Render deploy/yeniden başlatmada SIGTERM gönderir: bağlantıları düzgün kapat, takılırsa zorla çık.
+let closing = false;
+const shutdown = sig => {
+  if (closing) return;
+  closing = true;
+  console.log(sig + ' alındı, sunucu kapatılıyor…');
+  setTimeout(() => process.exit(0), 5000).unref();
+  io.close(() => process.exit(0));
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

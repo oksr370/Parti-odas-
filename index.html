@@ -105,7 +105,7 @@ const sock = io({ reconnectionDelayMax: 3000 });
 
 let S = null, at = 0, msg = '', toast = '', openHow = {};
 let catalog = {
-  musicCategories: ['Türkçe Pop', 'Yabancı Pop', 'Türkçe Rap', 'Yabancı Rap', 'Rock', 'Alternatif', 'Arabesk', 'Türkçe Slow', 'Yabancı Slow', '2000'ler', '2010'lar', '2020 ve sonrası', 'Film müzikleri', 'Dizi müzikleri', 'Oyun müzikleri', 'Karışık'],
+  musicCategories: ['Türkçe Pop', 'Yabancı Pop', 'Türkçe Rap', 'Yabancı Rap', 'Rock', 'Alternatif', 'Arabesk', 'Türkçe Slow', 'Yabancı Slow', '2000\'ler', '2010\'lar', '2020 ve sonrası', 'Film müzikleri', 'Dizi müzikleri', 'Oyun müzikleri', 'Karışık'],
   artistsTr: ['Tarkan', 'Sezen Aksu', 'Duman', 'Manga', 'Barış Manço', 'Teoman', 'Simge', 'Ezhel', 'Ceza', 'Sagopa Kajmer'],
   artistsEn: ['The Weeknd', 'Ed Sheeran', 'Billie Eilish', 'Queen', 'Linkin Park', 'Eminem', 'Adele', 'Coldplay'],
   filmCategories: ['Hollywood', 'Türk Sineması', 'Marvel', 'DC', 'Animasyon', 'Disney', 'Pixar', 'Harry Potter', 'Bilim Kurgu', 'Aksiyon', 'Komedi', 'Korku', 'Gerilim', 'Fantastik', 'Dram', 'Romantik', 'Macera', 'Suç ve Polisiye', 'Eski Klasikler', 'Yeni Filmler', 'Tüm Zamanların Popüler Filmleri'],
@@ -302,7 +302,7 @@ const getName = () => {
   try { localStorage.setItem('nm', v); } catch (e) {}
   return v;
 };
-const mk = () => { const n = getName(); if (n) sock.emit('create', n, r => save(r)); };
+const mk = () => { const n = getName(); if (n) sock.emit('create', n, r => { if (r && r.err) { msg = r.err; draw(); } else save(r); }); };
 const jn = () => {
   const n = getName();
   const cd = $('cd') ? $('cd').value.trim().toUpperCase() : '';
